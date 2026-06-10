@@ -86,6 +86,89 @@ class CheckPrecedenceTests(unittest.TestCase):
         self.assertEqual(code, 3)
 
 
+@contextlib.contextmanager
+def _install_env(system: str, present: set[str], has_key: bool):
+    backend = "openai" if has_key else None
+    scaffold = mock.Mock(return_value=False)
+    write_complete = mock.Mock()
+    install_macos = mock.Mock(return_value=(True, "installed via brew"))
+    with mock.patch.object(setup, "_which", side_effect=_which_for(present)), \
+            mock.patch.object(setup.platform, "system", return_value=system), \
+            mock.patch.object(setup, "_have_api_key", return_value=(has_key, backend)), \
+            mock.patch.object(setup, "_scaffold_env", scaffold), \
+            mock.patch.object(setup, "_write_setup_complete", write_complete), \
+            mock.patch.object(setup, "_install_macos", install_macos):
+        yield {
+            "scaffold": scaffold,
+            "write_complete": write_complete,
+            "install_macos": install_macos,
+        }
+
+
+def _run_install():
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = setup.cmd_install()
+    return code, out.getvalue(), err.getvalue()
+
+
+class InstallPrecedenceTests(unittest.TestCase):
+    def test_linux_ffmpeg_optional_proceeds_to_key_step_and_completes(self):
+        with _install_env("Linux", {"yt-dlp"}, has_key=True) as mocks:
+            code, out, err = _run_install()
+        self.assertEqual(code, 0)
+        mocks["scaffold"].assert_called_once()
+        mocks["write_complete"].assert_called_once()
+        self.assertIn("ffmpeg", err)
+        self.assertIn("--frames", err)
+
+    def test_linux_ffmpeg_optional_no_key_reaches_key_step_exits_3(self):
+        with _install_env("Linux", {"yt-dlp"}, has_key=False) as mocks:
+            code, out, err = _run_install()
+        self.assertEqual(code, 3)
+        mocks["scaffold"].assert_called_once()
+        self.assertIn("ffmpeg", err)
+
+    def test_linux_missing_ytdlp_hard_fails_before_scaffold(self):
+        with _install_env("Linux", {"ffmpeg", "ffprobe"}, has_key=True) as mocks:
+            code, out, err = _run_install()
+        self.assertEqual(code, 2)
+        mocks["scaffold"].assert_not_called()
+        mocks["write_complete"].assert_not_called()
+        self.assertIn("yt-dlp", err)
+
+    def test_windows_ffmpeg_optional_proceeds_to_key_step(self):
+        with _install_env("Windows", {"yt-dlp"}, has_key=True) as mocks:
+            code, out, err = _run_install()
+        self.assertEqual(code, 0)
+        mocks["scaffold"].assert_called_once()
+        self.assertIn("ffmpeg", err)
+        self.assertIn("--frames", err)
+
+    def test_windows_missing_ytdlp_hard_fails(self):
+        with _install_env("Windows", {"ffmpeg", "ffprobe"}, has_key=True) as mocks:
+            code, out, err = _run_install()
+        self.assertEqual(code, 2)
+        mocks["scaffold"].assert_not_called()
+        self.assertIn("yt-dlp", err)
+
+    def test_macos_brew_install_attempted_and_proceeds(self):
+        with _install_env("Darwin", {"yt-dlp", "ffmpeg", "ffprobe"}, has_key=True) as mocks:
+            with mock.patch.object(setup, "_check_binaries", side_effect=[["ffmpeg"], []]):
+                code, out, err = _run_install()
+        self.assertEqual(code, 0)
+        mocks["install_macos"].assert_called_once()
+        mocks["scaffold"].assert_called_once()
+
+    def test_macos_brew_failure_still_exits_2(self):
+        with _install_env("Darwin", {"yt-dlp"}, has_key=True) as mocks:
+            mocks["install_macos"].return_value = (False, "brew install failed")
+            with mock.patch.object(setup, "_check_binaries", return_value=["ffmpeg"]):
+                code, out, err = _run_install()
+        self.assertEqual(code, 2)
+        mocks["scaffold"].assert_not_called()
+
+
 class JsonStatusTests(unittest.TestCase):
     def test_json_lists_ffmpeg_and_ffprobe_when_absent_and_exits_0(self):
         with _env({"yt-dlp"}, has_key=True):

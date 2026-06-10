@@ -202,6 +202,13 @@ def _install_hint_windows(missing: list[str]) -> str:
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
+def _optional_ffmpeg_note(missing_optional: list[str]) -> str:
+    return (
+        f"[watch] note: {', '.join(missing_optional)} not found; "
+        "--frames and local-file Whisper transcription need ffmpeg."
+    )
+
+
 def _status() -> dict:
     """Structured preflight snapshot.
 
@@ -249,10 +256,7 @@ def cmd_check() -> int:
     s = _status()
     if s["status"] == "ready":
         if s["missing_optional"]:
-            sys.stderr.write(
-                f"[watch] note: {', '.join(s['missing_optional'])} not found; "
-                "--frames and local-file Whisper transcription need ffmpeg.\n"
-            )
+            sys.stderr.write(_optional_ffmpeg_note(s["missing_optional"]) + "\n")
             sys.stderr.flush()
         return 0
 
@@ -290,22 +294,33 @@ def cmd_install() -> int:
             if not ok:
                 return 2
             still_missing = _check_binaries()
-            if still_missing:
-                print(f"[setup] still missing after install: {', '.join(still_missing)}", file=sys.stderr)
+            still_required = [b for b in still_missing if b in HARD_BINARIES]
+            if still_required:
+                print(f"[setup] still missing after install: {', '.join(still_required)}", file=sys.stderr)
                 return 2
-            installed_deps = True
-        elif system == "Linux":
-            print("[setup] dependencies missing on Linux — please install:", file=sys.stderr)
-            print("  " + _install_hint_linux(missing), file=sys.stderr)
-            return 2
-        elif system == "Windows":
-            print("[setup] dependencies missing on Windows — please install:", file=sys.stderr)
-            print("  " + _install_hint_windows(missing), file=sys.stderr)
-            return 2
+            installed_deps = not still_missing
+            if still_missing:
+                print(_optional_ffmpeg_note(still_missing), file=sys.stderr)
         else:
-            print(f"[setup] unsupported platform ({system}) for auto-install. Install manually:", file=sys.stderr)
-            print(f"  missing: {', '.join(missing)}", file=sys.stderr)
-            return 2
+            missing_required = [b for b in missing if b in HARD_BINARIES]
+            missing_optional = [b for b in missing if b in OPTIONAL_BINARIES]
+            if system == "Linux":
+                hint = _install_hint_linux
+            elif system == "Windows":
+                hint = _install_hint_windows
+            else:
+                hint = None
+            if missing_required:
+                if hint is not None:
+                    print(f"[setup] dependencies missing on {system} — please install:", file=sys.stderr)
+                    print("  " + hint(missing_required), file=sys.stderr)
+                else:
+                    print(f"[setup] unsupported platform ({system}) for auto-install. Install manually:", file=sys.stderr)
+                    print(f"  missing: {', '.join(missing_required)}", file=sys.stderr)
+                return 2
+            print(_optional_ffmpeg_note(missing_optional), file=sys.stderr)
+            if hint is not None:
+                print("  " + hint(missing_optional), file=sys.stderr)
 
     created = _scaffold_env()
     if created:
