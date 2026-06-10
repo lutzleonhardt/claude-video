@@ -2,6 +2,21 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.2.0-transcript-first] — 2026-06-10
+
+Fork of [bradautomates/claude-video](https://github.com/bradautomates/claude-video) that inverts the default to **transcript-first**. The frames pipeline (now behind `--frames`) is unchanged from upstream.
+
+### Changed
+- **Transcript-only is now the default.** `/watch <url>` no longer downloads the video. It fetches the timestamped transcript only: yt-dlp pulls native captions via `--skip-download` (`download.py:fetch_captions_only`), and audio is downloaded only as a Whisper fallback (`fetch_audio_only`, smallest `-f ba` format). The transcript-mode report prints `**Mode:** transcript-only`, has no `## Frames` section, and ends with a tip to re-run with `--frames`. The >10-minute "sparse scan" warning no longer prints in transcript mode.
+- **`setup.py` relaxed:** `yt-dlp` is the only hard requirement (missing → exit `2`). `ffmpeg`/`ffprobe` are optional — they're surfaced in `--json` `missing_binaries`/`missing_optional`, but `--check` exits `0` with a stderr note instead of failing, since they're only needed for `--frames` and local-file Whisper. Missing Whisper key still exits `3`.
+- Docs (`SKILL.md`, `commands/watch.md`, `README.md`) rewritten for the transcript-first default: no unconditional Read-every-frame step (frame reading applies only under `--frames`), decision guidance for when to use `--frames`, updated flag list, token-efficiency, failure-mode, security, and setup exit-code sections.
+
+### Added
+- **`--frames`** — opt in to the upstream behavior: download the video (≤720p), extract frames, and `Read` them. Output shape is byte-identical to upstream.
+- **`--lang`** — comma-separated caption-language priority (default `de,de-orig,en,en-US,en-GB,en-orig`); `_pick_subtitle` selects the first language with a track. Threaded into both transcript-mode caption fetch and `--frames`-mode `download_url(sub_langs=...)`.
+- Frame-only flags (`--max-frames`/`--resolution`/`--fps`) now require `--frames`; passing one without it exits `2` with `error: --max-frames/--resolution/--fps require --frames`.
+- Stdlib `unittest` suite under `tests/` (arg-validation, `_pick_subtitle` language preference, `filter_range`, mocked `fetch_captions_only`/`transcribe_video` wiring). No new pip dependencies.
+
 ## [0.1.3] — 2026-05-09
 
 ### Fixed

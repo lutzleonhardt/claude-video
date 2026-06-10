@@ -15,7 +15,20 @@ Codex / generic skills:
 git clone https://github.com/bradautomates/claude-video.git ~/.codex/skills/watch
 ```
 
-Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
+Zero config to start — `yt-dlp` installs on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
+
+---
+
+## Fork changes
+
+This is a fork of [bradautomates/claude-video](https://github.com/bradautomates/claude-video) that inverts the default so `/watch` is **transcript-first**. Upstream always downloads the full video and extracts frames; here that only happens when you ask for it.
+
+- **Transcript-only by default.** `/watch <url>` fetches the timestamped transcript with no video download — yt-dlp pulls native captions via `--skip-download` (and downloads audio only as a Whisper fallback). Most questions about a video are about what's *said*, and a transcript costs a few thousand tokens instead of tens of thousands of image tokens.
+- **`--frames` opt-in.** Add `--frames` to get the upstream behavior: download the video (≤720p), extract frames, and `Read` them. Use it when the answer depends on what's *on screen* (visuals, slides, UI, on-screen code, a specific moment, a bug recording).
+- **`--lang` caption priority.** `--lang` picks the caption-language priority (default `de,de-orig,en,en-US,en-GB,en-orig`); the first language with a track wins, e.g. `--lang en`.
+- **Relaxed ffmpeg requirement.** `ffmpeg`/`ffprobe` are now optional — they're only needed for `--frames` and for transcribing local files via Whisper. `yt-dlp` is the only hard dependency; `setup.py --check` exits 0 without ffmpeg (with a stderr note).
+
+Everything below describes the original tool; the frames pipeline (under `--frames`) is unchanged from upstream. See [CHANGELOG.md](CHANGELOG.md) (`v0.2.0-transcript-first`) for the full list. Upstream remains MIT-licensed and so does this fork.
 
 ---
 
