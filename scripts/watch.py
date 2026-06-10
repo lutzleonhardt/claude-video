@@ -16,7 +16,13 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from download import download_url, is_url, resolve_local  # noqa: E402
+from download import (  # noqa: E402
+    download_url,
+    fetch_audio_only,
+    fetch_captions_only,
+    is_url,
+    resolve_local,
+)
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract, format_time, get_metadata, parse_time  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -211,6 +217,165 @@ def _run_frames_mode(args: argparse.Namespace, work: Path) -> int:
     return 0
 
 
+def _whisper_unavailable_hint(args: argparse.Namespace) -> None:
+    hint = (
+        f"--whisper {args.whisper} was set but the matching API key is missing"
+        if args.whisper else
+        "no subtitles and no Whisper API key found"
+    )
+    setup_py = SCRIPT_DIR / "setup.py"
+    print(
+        f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
+        file=sys.stderr,
+    )
+
+
+def _run_transcript_mode(args: argparse.Namespace, work: Path) -> int:
+    start_sec = parse_time(args.start)
+    end_sec = parse_time(args.end)
+    if start_sec is not None and start_sec < 0:
+        raise SystemExit("--start must be non-negative")
+    if end_sec is not None and start_sec is not None and end_sec <= start_sec:
+        raise SystemExit("--end must be greater than --start")
+    focused = start_sec is not None or end_sec is not None
+
+    transcript_segments: list[dict] = []
+    transcript_text: str | None = None
+    transcript_source: str | None = None
+    had_captions = False
+
+    if is_url(args.source):
+        print("[watch] fetching captions via yt-dlp…", file=sys.stderr)
+        dl = fetch_captions_only(args.source, work / "download", langs=args.lang)
+        info = dl.get("info") or {}
+        if dl.get("subtitle_path"):
+            had_captions = True
+            try:
+                all_segments = parse_vtt(dl["subtitle_path"])
+                transcript_segments = (
+                    filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+                )
+                transcript_text = format_transcript(transcript_segments)
+                transcript_source = "captions"
+            except Exception as exc:
+                print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
+
+        if not transcript_segments and not had_captions and not args.no_whisper:
+            backend, api_key = load_api_key(args.whisper)
+            if backend and api_key:
+                try:
+                    audio_path = fetch_audio_only(args.source, work / "download")
+                    all_segments, used_backend = transcribe_video(
+                        str(audio_path),
+                        work / "audio.mp3",
+                        backend=backend,
+                        api_key=api_key,
+                    )
+                    transcript_segments = (
+                        filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+                    )
+                    transcript_text = format_transcript(transcript_segments)
+                    transcript_source = f"whisper ({used_backend})"
+                except SystemExit as exc:
+                    print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+            else:
+                _whisper_unavailable_hint(args)
+    else:
+        print("[watch] using local file…", file=sys.stderr)
+        dl = resolve_local(args.source)
+        info = dl.get("info") or {}
+        if not args.no_whisper:
+            backend, api_key = load_api_key(args.whisper)
+            if backend and api_key:
+                try:
+                    all_segments, used_backend = transcribe_video(
+                        dl["video_path"],
+                        work / "audio.mp3",
+                        backend=backend,
+                        api_key=api_key,
+                    )
+                    transcript_segments = (
+                        filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+                    )
+                    transcript_text = format_transcript(transcript_segments)
+                    transcript_source = f"whisper ({used_backend})"
+                except SystemExit as exc:
+                    print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+            else:
+                _whisper_unavailable_hint(args)
+
+    duration: float | None = None
+    raw_duration = info.get("duration")
+    if raw_duration is not None:
+        try:
+            duration = float(raw_duration)
+        except (TypeError, ValueError):
+            duration = None
+
+    effective_start = start_sec if start_sec is not None else 0.0
+    effective_end = end_sec if end_sec is not None else duration
+
+    print()
+    print("# watch: transcript report")
+    print()
+    print(f"- **Source:** {args.source}")
+    if info.get("title"):
+        print(f"- **Title:** {info['title']}")
+    if info.get("uploader"):
+        print(f"- **Uploader:** {info['uploader']}")
+    print("- **Mode:** transcript-only")
+    if duration is not None:
+        print(f"- **Duration:** {format_time(duration)} ({duration:.1f}s)")
+    if focused:
+        end_label = format_time(effective_end) if effective_end is not None else "end"
+        print(f"- **Focus range:** {format_time(effective_start)} → {end_label}")
+    if transcript_segments:
+        in_range = " in range" if focused else ""
+        print(
+            f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
+            f"(via {transcript_source or 'captions'})"
+        )
+    else:
+        print("- **Transcript:** none available")
+
+    print()
+    print("## Transcript")
+    print()
+    if transcript_text:
+        label = transcript_source or "captions"
+        if focused:
+            end_label = format_time(effective_end) if effective_end is not None else "end"
+            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {end_label}:_")
+        else:
+            print(f"_Source: {label}._")
+        print()
+        print("```")
+        print(transcript_text)
+        print("```")
+    elif focused and had_captions:
+        end_label = format_time(effective_end) if effective_end is not None else "end"
+        print(f"_No transcript lines fell inside {format_time(effective_start)} → {end_label}._")
+    else:
+        setup_py = SCRIPT_DIR / "setup.py"
+        print(
+            "_No transcript available. Captions were missing and the Whisper fallback "
+            "was unavailable (no API key set, or `--no-whisper` was used). "
+            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
+        )
+
+    print()
+    print(
+        "> **Tip:** Re-run with `--frames` (optionally `--start HH:MM:SS --end HH:MM:SS`) "
+        "to extract on-screen visuals if the question needs what is shown, not just said."
+    )
+
+    print()
+    print("---")
+    print(f"_Work dir: `{work}` — delete when done._")
+
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="watch",
@@ -269,10 +434,7 @@ def main() -> int:
     if args.frames:
         return _run_frames_mode(args, work)
 
-    raise SystemExit(
-        "transcript-only mode is not yet implemented in this build — re-run with --frames "
-        "(the transcript-first default is added in a later change)."
-    )
+    return _run_transcript_mode(args, work)
 
 
 if __name__ == "__main__":
