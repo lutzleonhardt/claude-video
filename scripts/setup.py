@@ -2,7 +2,8 @@
 """Setup / preflight for /watch.
 
 Modes:
-  setup.py --check      Silent preflight. Exit 0 if ready, 2/3/4 on failure.
+  setup.py --check      Silent preflight. Exit 0 if ready (yt-dlp + key; ffmpeg
+                        optional), 2 if yt-dlp missing, 3 if Whisper key missing.
   setup.py --json       Machine-readable status for Claude to parse.
   setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
 
@@ -28,6 +29,11 @@ from pathlib import Path
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+# yt-dlp is the only hard requirement: transcript-only mode cannot fetch captions
+# or audio without it. ffmpeg/ffprobe are optional, used only for --frames and
+# transcribing local files via Whisper.
+HARD_BINARIES = ["yt-dlp"]
+OPTIONAL_BINARIES = ["ffmpeg", "ffprobe"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch API configuration
@@ -197,23 +203,32 @@ def _install_hint_windows(missing: list[str]) -> str:
 
 
 def _status() -> dict:
-    """Structured preflight snapshot."""
+    """Structured preflight snapshot.
+
+    Readiness is judged on the hard requirement (yt-dlp) plus a Whisper key.
+    ffmpeg/ffprobe are still surfaced in ``missing_binaries`` so callers can warn,
+    but their absence does not make the tool "not ready" for transcript-only use.
+    """
     missing = _check_binaries()
+    missing_required = [b for b in missing if b in HARD_BINARIES]
+    missing_optional = [b for b in missing if b in OPTIONAL_BINARIES]
     has_key, backend = _have_api_key()
 
-    if not missing and has_key:
-        status = "ready"
-    elif missing and not has_key:
+    if missing_required and not has_key:
         status = "needs_install_and_key"
-    elif missing:
+    elif missing_required:
         status = "needs_install"
-    else:
+    elif not has_key:
         status = "needs_key"
+    else:
+        status = "ready"
 
     return {
         "status": status,
         "first_run": is_first_run(),
         "missing_binaries": missing,
+        "missing_required": missing_required,
+        "missing_optional": missing_optional,
         "whisper_backend": backend,
         "has_api_key": has_key,
         "config_file": str(CONFIG_FILE),
@@ -224,19 +239,26 @@ def _status() -> dict:
 def cmd_check() -> int:
     """Silent-on-success preflight.
 
-    Exit 0 with no output when ready. On failure, print one actionable line
-    to stderr and return:
-      2 → binaries missing
-      3 → API key missing
-      4 → both missing
+    Transcript-only mode only needs yt-dlp + a Whisper key, so ffmpeg/ffprobe are
+    optional. Exit 0 when ready (with a stderr note if ffmpeg/ffprobe are absent,
+    since --frames and local-file Whisper need them). On failure, print one
+    actionable line to stderr and return, in precedence order:
+      2 → yt-dlp missing (hard requirement; wins over key/ffmpeg state)
+      3 → Whisper API key missing
     """
     s = _status()
     if s["status"] == "ready":
+        if s["missing_optional"]:
+            sys.stderr.write(
+                f"[watch] note: {', '.join(s['missing_optional'])} not found; "
+                "--frames and local-file Whisper transcription need ffmpeg.\n"
+            )
+            sys.stderr.flush()
         return 0
 
     parts = []
-    if s["missing_binaries"]:
-        parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
+    if s["missing_required"]:
+        parts.append(f"missing binaries: {', '.join(s['missing_required'])}")
     if not s["has_api_key"]:
         parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
     installer = Path(__file__).resolve()
@@ -246,9 +268,7 @@ def cmd_check() -> int:
     )
     sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
-        return 4
-    if s["missing_binaries"]:
+    if s["missing_required"]:
         return 2
     return 3
 
