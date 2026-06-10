@@ -7,6 +7,7 @@ then Reads each frame path to see the video.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -15,51 +16,35 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from download import download, is_url  # noqa: E402
+from download import download_url, is_url, resolve_local  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract, format_time, get_metadata, parse_time  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
+DEFAULT_LANGS = "de,de-orig,en,en-US,en-GB,en-orig"
+FFMPEG_INSTALL_HINT = (
+    "ffmpeg is required for --frames. Install with: brew install ffmpeg "
+    "(or apt install ffmpeg / choco install ffmpeg)"
+)
 
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        prog="watch",
-        description="Download a video, extract auto-scaled frames, and surface the transcript.",
-    )
-    ap.add_argument("source", help="Video URL or local file path")
-    ap.add_argument("--max-frames", type=int, default=80, help="Cap on frame count (default 80, hard max 100)")
-    ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
-    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
-    ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
-    ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
-    ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
-    ap.add_argument(
-        "--no-whisper",
-        action="store_true",
-        help="Disable Whisper fallback. Report frames-only if no captions available.",
-    )
-    ap.add_argument(
-        "--whisper",
-        choices=["groq", "openai"],
-        default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
-    )
-    args = ap.parse_args()
 
-    max_frames = min(args.max_frames, 100)
+def _run_frames_mode(args: argparse.Namespace, work: Path) -> int:
+    missing = [binary for binary in ("ffmpeg", "ffprobe") if shutil.which(binary) is None]
+    if missing:
+        print(f"[watch] {FFMPEG_INSTALL_HINT}", file=sys.stderr)
+        raise SystemExit(2)
 
-    if args.out_dir:
-        work = Path(args.out_dir).expanduser().resolve()
-    else:
-        work = Path(tempfile.mkdtemp(prefix="watch-"))
-    work.mkdir(parents=True, exist_ok=True)
-    print(f"[watch] working dir: {work}", file=sys.stderr)
+    max_frames = min(args.max_frames if args.max_frames is not None else 80, 100)
+    resolution = args.resolution if args.resolution is not None else 512
 
     print(
         "[watch] downloading via yt-dlp…" if is_url(args.source) else "[watch] using local file…",
         file=sys.stderr,
     )
-    dl = download(args.source, work / "download")
+    if is_url(args.source):
+        dl = download_url(args.source, work / "download", sub_langs=args.lang)
+    else:
+        dl = resolve_local(args.source)
     video_path = dl["video_path"]
 
     meta = get_metadata(video_path)
@@ -98,7 +83,7 @@ def main() -> int:
         video_path,
         work / "frames",
         fps=fps,
-        resolution=args.resolution,
+        resolution=resolution,
         max_frames=max_frames,
         start_seconds=start_sec,
         end_seconds=end_sec,
@@ -163,7 +148,7 @@ def main() -> int:
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     mode = "focused" if focused else "full"
     print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
-    print(f"- **Frame size:** {args.resolution}px wide")
+    print(f"- **Frame size:** {resolution}px wide")
     if transcript_segments:
         in_range = " in range" if focused else ""
         print(
@@ -224,6 +209,70 @@ def main() -> int:
     print(f"_Work dir: `{work}` — delete when done._")
 
     return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="watch",
+        description="Surface a video's transcript by default; opt into frame extraction with --frames.",
+    )
+    ap.add_argument("source", help="Video URL or local file path")
+    ap.add_argument(
+        "--frames",
+        action="store_true",
+        help="Opt in to full video download + frame extraction (upstream behavior).",
+    )
+    ap.add_argument(
+        "--lang",
+        type=str,
+        default=DEFAULT_LANGS,
+        help=f"Comma-separated caption language priority (default: {DEFAULT_LANGS})",
+    )
+    ap.add_argument(
+        "--max-frames", type=int, default=None,
+        help="Cap on frame count (default 80, hard max 100). Requires --frames.",
+    )
+    ap.add_argument(
+        "--resolution", type=int, default=None,
+        help="Frame width in pixels (default 512). Requires --frames.",
+    )
+    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps. Requires --frames.")
+    ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
+    ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
+    ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
+    ap.add_argument(
+        "--no-whisper",
+        action="store_true",
+        help="Disable Whisper fallback. Report frames-only if no captions available.",
+    )
+    ap.add_argument(
+        "--whisper",
+        choices=["groq", "openai"],
+        default=None,
+        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+    )
+    args = ap.parse_args()
+
+    if (
+        args.max_frames is not None or args.resolution is not None or args.fps is not None
+    ) and not args.frames:
+        print("error: --max-frames/--resolution/--fps require --frames", file=sys.stderr)
+        raise SystemExit(2)
+
+    if args.out_dir:
+        work = Path(args.out_dir).expanduser().resolve()
+    else:
+        work = Path(tempfile.mkdtemp(prefix="watch-"))
+    work.mkdir(parents=True, exist_ok=True)
+    print(f"[watch] working dir: {work}", file=sys.stderr)
+
+    if args.frames:
+        return _run_frames_mode(args, work)
+
+    raise SystemExit(
+        "transcript-only mode is not yet implemented in this build — re-run with --frames "
+        "(the transcript-first default is added in a later change)."
+    )
 
 
 if __name__ == "__main__":
