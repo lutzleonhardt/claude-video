@@ -18,7 +18,7 @@ You don't have a video input; this skill gives you one. By default a Python scri
 
 **Python interpreter:** every `python3 ...` command in this skill is for macOS/Linux. On **Windows**, substitute `python` — the `python3` command on Windows is the Microsoft Store stub and will not run the script.
 
-Before every `/watch` run, verify that dependencies and an API key are in place:
+Before every `/watch` run, verify that dependencies are in place:
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --check
@@ -26,15 +26,16 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --check
 
 This is a <100ms lookup. On exit 0, the script emits **nothing** to stdout — proceed to Step 1 without comment. **Do NOT announce "setup is complete" to the user** — they don't need a status message on every turn. The only acceptable user-visible output from Step 0 is when remediation is required.
 
-`yt-dlp` is the only hard requirement: transcript-only mode (the default) needs it to fetch captions or audio. `ffmpeg`/`ffprobe` are **optional** — they're only used for `--frames` and for transcribing local files via Whisper. When everything is ready but ffmpeg/ffprobe are missing, `--check` still exits 0 and prints a one-line note to **stderr** so you know `--frames` and local-file Whisper won't work until they're installed.
+`yt-dlp` is the only hard requirement: transcript-only mode (the default) needs it to fetch captions or audio. Everything else is **optional** and never fails the preflight: `ffmpeg`/`ffprobe` are only used for `--frames` and for transcribing local files via Whisper, and a Whisper API key is only needed for videos without native captions. When either is missing, `--check` still exits 0 and prints a one-line note to **stderr** so you know which fallback paths are unavailable.
 
 On non-zero exit, follow the table:
 
 | Exit | Meaning | Action |
 |------|---------|--------|
-| `0` | Ready (yt-dlp + key present; ffmpeg/ffprobe optional) | Proceed. A stderr note may say ffmpeg/ffprobe are missing — only relevant for `--frames` / local-file Whisper |
+| `0` | Ready (yt-dlp present; ffmpeg/ffprobe and Whisper key optional) | Proceed. Stderr notes may say ffmpeg/ffprobe are missing (only relevant for `--frames` / local-file Whisper) or that no Whisper key is set (only relevant for caption-less videos) |
 | `2` | `yt-dlp` missing (hard requirement) | Run installer |
-| `3` | No Whisper API key | Run installer to scaffold `.env`, then ask user for a key |
+
+(The **installer** — not `--check` — exits `3` when deps are in place but no Whisper key is configured yet; see below.)
 
 The installer is idempotent — safe to re-run:
 
@@ -175,7 +176,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 
 ## Failure modes and handling
 
-- **Setup preflight failed** → run `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"` (auto-installs yt-dlp/ffmpeg via brew on macOS, scaffolds the `.env`). Exit `2` means yt-dlp is missing (hard requirement); exit `3` means no Whisper key — ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
+- **Setup preflight failed** → run `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"` (auto-installs yt-dlp/ffmpeg via brew on macOS, scaffolds the `.env`). `--check` exit `2` means yt-dlp is missing (hard requirement). A missing Whisper key is only a stderr note on `--check` (captioned videos need no key); the **installer** exits `3` for it — then ask the user via `AskUserQuestion` and write the key to `~/.config/watch/.env`, or proceed without one if they don't want Whisper.
 - **ffmpeg/ffprobe missing** → only matters for `--frames` and local-file Whisper. Transcript-only mode on a captioned URL works fine without them. If the user wants `--frames`, prompt to install ffmpeg first.
 - **`--frames` without ffmpeg** → the script exits `2` with an install hint and does **not** silently fall back to transcript-only. Install ffmpeg, then re-run.
 - **No transcript available** → captions missing AND (no Whisper key OR `--no-whisper` OR Whisper API failed). The report says `Transcript: none available` (exit 0) with a hint pointing to setup. Tell the user; offer `--frames` if the question is visual.

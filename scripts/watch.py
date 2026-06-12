@@ -98,16 +98,19 @@ def _run_frames_mode(args: argparse.Namespace, work: Path) -> int:
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
     transcript_source: str | None = None
+    parsed_any = False  # a transcript source yielded segments before focus filtering
+    whisper_error: str | None = None
     if dl.get("subtitle_path"):
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
+            parsed_any = bool(all_segments)
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
             transcript_text = format_transcript(transcript_segments)
             transcript_source = "captions"
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
-    if not transcript_segments and not args.no_whisper:
+    if not transcript_segments and not parsed_any and not args.no_whisper:
         backend, api_key = load_api_key(args.whisper)
         if backend and api_key:
             try:
@@ -117,22 +120,15 @@ def _run_frames_mode(args: argparse.Namespace, work: Path) -> int:
                     backend=backend,
                     api_key=api_key,
                 )
+                parsed_any = bool(all_segments)
                 transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 transcript_text = format_transcript(transcript_segments)
                 transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+                whisper_error = str(exc) or "unknown error"
+                print(f"[watch] whisper fallback failed: {whisper_error}", file=sys.stderr)
         else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
-            setup_py = SCRIPT_DIR / "setup.py"
-            print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
-                file=sys.stderr,
-            )
+            _whisper_unavailable_hint(args)
 
     info = dl.get("info") or {}
 
@@ -199,8 +195,14 @@ def _run_frames_mode(args: argparse.Namespace, work: Path) -> int:
         print("```")
         print(transcript_text)
         print("```")
-    elif focused and dl.get("subtitle_path"):
+    elif focused and parsed_any:
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
+    elif whisper_error:
+        print(
+            f"_No transcript available — the Whisper fallback ran but failed: {whisper_error} — "
+            "proceed with frames only, or retry with `--whisper openai` / `--whisper groq` "
+            "to switch backends._"
+        )
     else:
         setup_py = SCRIPT_DIR / "setup.py"
         print(
@@ -242,16 +244,17 @@ def _run_transcript_mode(args: argparse.Namespace, work: Path) -> int:
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
     transcript_source: str | None = None
-    had_captions = False
+    parsed_any = False  # a transcript source yielded segments before focus filtering
+    whisper_error: str | None = None
 
     if is_url(args.source):
         print("[watch] fetching captions via yt-dlp…", file=sys.stderr)
         dl = fetch_captions_only(args.source, work / "download", langs=args.lang)
         info = dl.get("info") or {}
         if dl.get("subtitle_path"):
-            had_captions = True
             try:
                 all_segments = parse_vtt(dl["subtitle_path"])
+                parsed_any = bool(all_segments)
                 transcript_segments = (
                     filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 )
@@ -260,7 +263,7 @@ def _run_transcript_mode(args: argparse.Namespace, work: Path) -> int:
             except Exception as exc:
                 print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
-        if not transcript_segments and not had_captions and not args.no_whisper:
+        if not transcript_segments and not parsed_any and not args.no_whisper:
             backend, api_key = load_api_key(args.whisper)
             if backend and api_key:
                 try:
@@ -271,13 +274,15 @@ def _run_transcript_mode(args: argparse.Namespace, work: Path) -> int:
                         backend=backend,
                         api_key=api_key,
                     )
+                    parsed_any = bool(all_segments)
                     transcript_segments = (
                         filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                     )
                     transcript_text = format_transcript(transcript_segments)
                     transcript_source = f"whisper ({used_backend})"
                 except SystemExit as exc:
-                    print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+                    whisper_error = str(exc) or "unknown error"
+                    print(f"[watch] whisper fallback failed: {whisper_error}", file=sys.stderr)
             else:
                 _whisper_unavailable_hint(args)
     else:
@@ -294,13 +299,15 @@ def _run_transcript_mode(args: argparse.Namespace, work: Path) -> int:
                         backend=backend,
                         api_key=api_key,
                     )
+                    parsed_any = bool(all_segments)
                     transcript_segments = (
                         filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                     )
                     transcript_text = format_transcript(transcript_segments)
                     transcript_source = f"whisper ({used_backend})"
                 except SystemExit as exc:
-                    print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+                    whisper_error = str(exc) or "unknown error"
+                    print(f"[watch] whisper fallback failed: {whisper_error}", file=sys.stderr)
             else:
                 _whisper_unavailable_hint(args)
 
@@ -352,9 +359,15 @@ def _run_transcript_mode(args: argparse.Namespace, work: Path) -> int:
         print("```")
         print(transcript_text)
         print("```")
-    elif focused and had_captions:
+    elif focused and parsed_any:
         end_label = format_time(effective_end) if effective_end is not None else "end"
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {end_label}._")
+    elif whisper_error:
+        print(
+            f"_No transcript available — the Whisper fallback ran but failed: {whisper_error} — "
+            "retry with `--whisper openai` / `--whisper groq` to switch backends, "
+            "or re-run with `--frames` to at least see the visuals._"
+        )
     else:
         setup_py = SCRIPT_DIR / "setup.py"
         print(
@@ -408,7 +421,7 @@ def main() -> int:
     ap.add_argument(
         "--no-whisper",
         action="store_true",
-        help="Disable Whisper fallback. Report frames-only if no captions available.",
+        help="Disable Whisper fallback. Videos without captions return no transcript.",
     )
     ap.add_argument(
         "--whisper",

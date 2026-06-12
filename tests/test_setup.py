@@ -1,8 +1,10 @@
 """Unit tests for the relaxed setup.py preflight precedence.
 
 Transcript-only usage only hard-requires yt-dlp; ffmpeg/ffprobe are optional
-(needed for --frames and local-file Whisper). Precedence:
-  yt-dlp missing -> exit 2 (over key/ffmpeg) ; key missing -> exit 3 ; else 0.
+(needed for --frames and local-file Whisper) and so is the Whisper key
+(needed only for caption-less videos). Precedence for --check:
+  yt-dlp missing -> exit 2 ; else 0 (stderr notes for missing ffmpeg/key).
+The installer still exits 3 at the key step so the wizard flow can ask for one.
 """
 from __future__ import annotations
 
@@ -74,16 +76,21 @@ class CheckPrecedenceTests(unittest.TestCase):
             code, _ = _run_check()
         self.assertEqual(code, 2)
 
-    def test_missing_key_with_binaries_ok_exits_3(self):
+    def test_missing_key_with_binaries_ok_exits_0_with_note(self):
+        # Captioned videos need no Whisper key — a missing key must not fail
+        # the preflight, only leave a note on stderr.
         with _env({"yt-dlp", "ffmpeg", "ffprobe"}, has_key=False):
             code, err = _run_check()
-        self.assertEqual(code, 3)
+        self.assertEqual(code, 0)
         self.assertIn("API key", err)
+        self.assertIn("no transcript", err)
 
-    def test_missing_key_exits_3_even_when_ffmpeg_missing(self):
+    def test_missing_key_and_ffmpeg_exits_0_with_both_notes(self):
         with _env({"yt-dlp"}, has_key=False):
-            code, _ = _run_check()
-        self.assertEqual(code, 3)
+            code, err = _run_check()
+        self.assertEqual(code, 0)
+        self.assertIn("ffmpeg", err)
+        self.assertIn("API key", err)
 
 
 @contextlib.contextmanager

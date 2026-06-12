@@ -138,7 +138,7 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
-| Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+| Disable Whisper entirely | `--no-whisper` | Free; no transcript when captions are missing |
 
 ## Usage
 
