@@ -3,9 +3,9 @@ name: watch
 description: Watch a video (URL or local path). By default, pulls the timestamped transcript only (native captions via yt-dlp, or Whisper API fallback) with no video download — cheap and fast. Add --frames to also download the video and extract frames with ffmpeg when the question needs what's on screen. Hands the result to Claude so it can answer questions about the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
-homepage: https://github.com/bradautomates/claude-video
-repository: https://github.com/bradautomates/claude-video
-author: bradautomates
+homepage: https://github.com/lutzleonhardt/claude-video
+repository: https://github.com/lutzleonhardt/claude-video
+author: lutzleonhardt (fork of bradautomates/claude-video)
 license: MIT
 user-invocable: true
 ---

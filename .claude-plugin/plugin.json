@@ -3,10 +3,10 @@
   "version": "0.2.0-transcript-first",
   "description": "Let Claude watch a video. Transcript-first by default: pulls native captions (or Whisper fallback) with no video download. Add --frames to also download the video and extract frames with ffmpeg. Hands the result to Claude so it can answer questions about the video.",
   "author": {
-    "name": "Bradley Bonanno"
+    "name": "Lutz Leonhardt (fork of upstream by Bradley Bonanno)"
   },
-  "homepage": "https://github.com/bradautomates/claude-video",
-  "repository": "https://github.com/bradautomates/claude-video",
+  "homepage": "https://github.com/lutzleonhardt/claude-video",
+  "repository": "https://github.com/lutzleonhardt/claude-video",
   "license": "MIT",
   "keywords": ["video", "watch", "youtube", "vimeo", "tiktok", "transcription", "whisper", "yt-dlp", "ffmpeg", "multimodal", "frames"]
 }

@@ -4,18 +4,18 @@
     "description": "Give Claude a video input. /watch pulls the transcript by default (captions or Whisper fallback, no video download); add --frames to also download the video and extract frames, then hands it all to Claude."
   },
   "owner": {
-    "name": "Bradley Bonanno"
+    "name": "Lutz Leonhardt"
   },
   "plugins": [
     {
       "name": "watch",
       "description": "Watch a video (URL or local path). Transcript-first by default: pulls native captions (or Whisper fallback) with no video download. Add --frames to also download the video and extract frames with ffmpeg.",
       "author": {
-        "name": "Bradley Bonanno"
+        "name": "Lutz Leonhardt (fork of upstream by Bradley Bonanno)"
       },
       "source": "./",
       "category": "productivity",
-      "homepage": "https://github.com/bradautomates/claude-video"
+      "homepage": "https://github.com/lutzleonhardt/claude-video"
     }
   ]
 }
