@@ -4,24 +4,37 @@
 
 Claude Code:
 ```
-/plugin marketplace add bradautomates/claude-video
+/plugin marketplace add lutzleonhardt/claude-video
 /plugin install watch@claude-video
 ```
 
-claude.ai (web): [download `watch.skill`](https://github.com/bradautomates/claude-video/releases/latest) and drop it into Settings → Capabilities → Skills.
+claude.ai (web): build `watch.skill` with `scripts/build-skill.sh` and drop it into Settings → Capabilities → Skills.
 
 Codex / generic skills:
 ```bash
-git clone https://github.com/bradautomates/claude-video.git ~/.codex/skills/watch
+git clone https://github.com/lutzleonhardt/claude-video.git ~/.codex/skills/watch
 ```
 
-Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
+Zero config to start — `yt-dlp` installs on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
+
+---
+
+## Fork changes
+
+This is a fork of [bradautomates/claude-video](https://github.com/bradautomates/claude-video) that inverts the default so `/watch` is **transcript-first**. Upstream always downloads the full video and extracts frames; here that only happens when you ask for it.
+
+- **Transcript-only by default.** `/watch <url>` fetches the timestamped transcript with no video download — yt-dlp pulls native captions via `--skip-download` (and downloads audio only as a Whisper fallback). Most questions about a video are about what's *said*, and a transcript costs a few thousand tokens instead of tens of thousands of image tokens.
+- **`--frames` opt-in.** Add `--frames` to get the upstream behavior: download the video (≤720p), extract frames, and `Read` them. Use it when the answer depends on what's *on screen* (visuals, slides, UI, on-screen code, a specific moment, a bug recording).
+- **`--lang` caption priority.** `--lang` picks the caption-language priority (default `de,de-orig,en,en-US,en-GB,en-orig`); the first language with a track wins, e.g. `--lang en`.
+- **Relaxed ffmpeg requirement.** `ffmpeg`/`ffprobe` are now optional — they're only needed for `--frames` and for transcribing local files via Whisper. `yt-dlp` is the only hard dependency; `setup.py --check` exits 0 without ffmpeg (with a stderr note).
+
+Everything below describes the original tool; the frames pipeline (under `--frames`) is unchanged from upstream. See [CHANGELOG.md](CHANGELOG.md) (`v0.2.0-transcript-first`) for the full list. Upstream remains MIT-licensed and so does this fork.
 
 ---
 
 Claude can read a webpage, run a script, browse a repo. What it can't do, out of the box, is *watch a video*. You paste a YouTube link and it has to either guess from the title or pull a transcript that's missing 90% of what's on screen.
 
-With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude downloads the video, extracts frames at an auto-scaled rate, pulls a timestamped transcript (free captions when available, Whisper API as fallback), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
+With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude pulls a timestamped transcript (free captions when available, Whisper API as fallback) — by default with no video download at all. Add `--frames` and it also downloads the video, extracts frames at an auto-scaled rate, and `Read`s every frame as an image. By the time it answers, it has *heard* the audio — and, with `--frames`, *seen* the video.
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?
@@ -29,11 +42,11 @@ With Claude Video `/watch` you can paste a URL or a local path, ask a question, 
 
 ## Why this exists
 
-I built this because I'm constantly using video to keep up with content. If I see a YouTube video that's blowing up, I want to know how the creator structured the hook — what's on screen in the first 3 seconds, what they said, why it worked. That used to mean watching it myself with a notepad. Now I just paste the URL and ask.
+Upstream's author built this for content research — when a video blows up, he wants to know how the creator structured the hook: what's on screen in the first 3 seconds, what they said, why it worked. That used to mean watching it manually with a notepad; with `/watch` it's a pasted URL.
 
-The other half is summarization. Most YouTube videos don't deserve 20 minutes of my attention. I hand the URL to Claude, it pulls the transcript, and tells me what actually happened. If the visual matters, frames come along too. If it's a podcast or a talking head, transcript is enough.
+I forked it for the other half: summarization. Most YouTube videos don't deserve 20 minutes of attention, and most questions about them are answered by what's *said*, not what's shown. So this fork pulls the transcript by default — a few thousand text tokens, no video download — and fetches frames only when the visual actually matters (`--frames`). If it's a podcast or a talking head, the transcript is enough.
 
-Claude is great at reading and synthesizing — but until now, video was the one input I couldn't hand it. Pasting a YouTube link got you nothing useful. `/watch` closes that gap.
+Claude is great at reading and synthesizing — but video is an input it can't take natively. Pasting a YouTube link gets you nothing useful. `/watch` closes that gap.
 
 ## What people actually use it for
 
@@ -46,10 +59,10 @@ Claude is great at reading and synthesizing — but until now, video was the one
 ## How it works
 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
-2. **`yt-dlp` downloads it.** For URLs, into a temp working directory. For local files, no download — just probed in place.
-3. **`ffmpeg` extracts frames at an auto-scaled rate.** The frame budget is duration-aware: ≤30s gets ~30 frames, 30-60s gets ~40, 1-3min gets ~60, 3-10min gets ~80, longer gets 100 sparsely. Hard ceilings: 2 fps, 100 frames. JPEGs at 512px wide by default — bump with `--resolution 1024` if Claude needs to read on-screen text.
+2. **`yt-dlp` fetches it.** By default only the caption track and metadata (`--skip-download`); with `--frames`, the full video (≤720p) into a temp working directory. For local files, no download — just probed in place.
+3. **With `--frames`, `ffmpeg` extracts frames at an auto-scaled rate.** The frame budget is duration-aware: ≤30s gets ~30 frames, 30-60s gets ~40, 1-3min gets ~60, 3-10min gets ~80, longer gets 100 sparsely. Hard ceilings: 2 fps, 100 frames. JPEGs at 512px wide by default — bump with `--resolution 1024` if Claude needs to read on-screen text.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz audio clip and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
-5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
+5. **The transcript (and frames, if requested) are handed to Claude.** The script prints the transcript with timestamps and, in `--frames` mode, frame paths with `t=MM:SS` markers. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
 7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Claude removes it.
 
@@ -71,15 +84,15 @@ When the user names a moment ("around 2:30", "the last 30 seconds", "from 0:45 t
 
 | Surface | Install |
 |---------|---------|
-| **Claude Code** | `/plugin marketplace add bradautomates/claude-video` then `/plugin install watch@claude-video` |
-| **claude.ai** (web) | [Download `watch.skill`](https://github.com/bradautomates/claude-video/releases/latest) → Settings → Capabilities → Skills → `+` |
-| **Codex** | `git clone https://github.com/bradautomates/claude-video.git ~/.codex/skills/watch` |
-| **Manual / dev** | `git clone https://github.com/bradautomates/claude-video.git ~/.claude/skills/watch` |
+| **Claude Code** | `/plugin marketplace add lutzleonhardt/claude-video` then `/plugin install watch@claude-video` |
+| **claude.ai** (web) | Build `watch.skill` with `scripts/build-skill.sh` → Settings → Capabilities → Skills → `+` |
+| **Codex** | `git clone https://github.com/lutzleonhardt/claude-video.git ~/.codex/skills/watch` |
+| **Manual / dev** | `git clone https://github.com/lutzleonhardt/claude-video.git ~/.claude/skills/watch` |
 
 ### Claude Code
 
 ```
-/plugin marketplace add bradautomates/claude-video
+/plugin marketplace add lutzleonhardt/claude-video
 /plugin install watch@claude-video
 ```
 
@@ -87,7 +100,7 @@ Update later with `/plugin update watch@claude-video`.
 
 ### claude.ai (web)
 
-1. [Download `watch.skill`](https://github.com/bradautomates/claude-video/releases/latest) from the latest release.
+1. Build `watch.skill`: `bash scripts/build-skill.sh` (the file lands in `dist/`).
 2. Go to Settings → Capabilities → Skills.
 3. Click `+` and drop the file in.
 
@@ -96,18 +109,18 @@ Enable "Code execution and file creation" under Capabilities first — the skill
 ### Codex
 
 ```bash
-git clone https://github.com/bradautomates/claude-video.git ~/.codex/skills/watch
+git clone https://github.com/lutzleonhardt/claude-video.git ~/.codex/skills/watch
 ```
 
 ### Manual (developer)
 
 ```bash
-git clone https://github.com/bradautomates/claude-video.git ~/.claude/skills/watch
+git clone https://github.com/lutzleonhardt/claude-video.git ~/.claude/skills/watch
 ```
 
 ## First run
 
-On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, or no Whisper API key is set, it walks you through fixing it:
+On the first `/watch` call, the skill runs `scripts/setup.py --check`. Only a missing `yt-dlp` fails the check; missing `ffmpeg` or a missing Whisper API key just produce a stderr note (both are optional — needed for `--frames` and for caption-less videos respectively). The installer walks you through whatever is missing:
 
 - **macOS** — auto-runs `brew install ffmpeg yt-dlp`.
 - **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
@@ -125,7 +138,7 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
-| Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+| Disable Whisper entirely | `--no-whisper` | Free; no transcript when captions are missing |
 
 ## Usage
 
@@ -149,7 +162,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
 - `--whisper groq|openai` — force a specific Whisper backend.
-- `--no-whisper` — disable transcription entirely; frames only.
+- `--no-whisper` — disable the Whisper fallback; no transcript when captions are missing.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
 ## Limits
@@ -197,4 +210,4 @@ Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transc
 
 ---
 
-[github.com/bradautomates/claude-video](https://github.com/bradautomates/claude-video) · [LICENSE](LICENSE)
+[github.com/lutzleonhardt/claude-video](https://github.com/lutzleonhardt/claude-video) · fork of [bradautomates/claude-video](https://github.com/bradautomates/claude-video) · [LICENSE](LICENSE)

@@ -2,7 +2,9 @@
 """Setup / preflight for /watch.
 
 Modes:
-  setup.py --check      Silent preflight. Exit 0 if ready, 2/3/4 on failure.
+  setup.py --check      Silent preflight. Exit 0 if ready (yt-dlp present;
+                        ffmpeg and Whisper key optional, flagged via stderr
+                        notes), 2 if yt-dlp missing.
   setup.py --json       Machine-readable status for Claude to parse.
   setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
 
@@ -28,6 +30,11 @@ from pathlib import Path
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+# yt-dlp is the only hard requirement: transcript-only mode cannot fetch captions
+# or audio without it. ffmpeg/ffprobe are optional, used only for --frames and
+# transcribing local files via Whisper.
+HARD_BINARIES = ["yt-dlp"]
+OPTIONAL_BINARIES = ["ffmpeg", "ffprobe"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch API configuration
@@ -42,7 +49,7 @@ ENV_TEMPLATE = """# /watch API configuration
 # Get an OpenAI key:  https://platform.openai.com/api-keys
 #
 # Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
+# without native captions will come back with no transcript.
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
@@ -196,24 +203,42 @@ def _install_hint_windows(missing: list[str]) -> str:
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
+def _optional_ffmpeg_note(missing_optional: list[str]) -> str:
+    return (
+        f"[watch] note: {', '.join(missing_optional)} not found; "
+        "--frames and local-file Whisper transcription need ffmpeg."
+    )
+
+
 def _status() -> dict:
-    """Structured preflight snapshot."""
+    """Structured preflight snapshot.
+
+    yt-dlp is the only hard requirement. A missing Whisper key is surfaced as
+    ``needs_key`` so the installer/wizard flows can offer to configure one, but
+    --check treats it as a stderr note, not a failure — captioned videos need
+    no key. ffmpeg/ffprobe are surfaced in ``missing_binaries`` so callers can
+    warn, but their absence never makes the tool "not ready".
+    """
     missing = _check_binaries()
+    missing_required = [b for b in missing if b in HARD_BINARIES]
+    missing_optional = [b for b in missing if b in OPTIONAL_BINARIES]
     has_key, backend = _have_api_key()
 
-    if not missing and has_key:
-        status = "ready"
-    elif missing and not has_key:
+    if missing_required and not has_key:
         status = "needs_install_and_key"
-    elif missing:
+    elif missing_required:
         status = "needs_install"
-    else:
+    elif not has_key:
         status = "needs_key"
+    else:
+        status = "ready"
 
     return {
         "status": status,
         "first_run": is_first_run(),
         "missing_binaries": missing,
+        "missing_required": missing_required,
+        "missing_optional": missing_optional,
         "whisper_backend": backend,
         "has_api_key": has_key,
         "config_file": str(CONFIG_FILE),
@@ -224,33 +249,32 @@ def _status() -> dict:
 def cmd_check() -> int:
     """Silent-on-success preflight.
 
-    Exit 0 with no output when ready. On failure, print one actionable line
-    to stderr and return:
-      2 → binaries missing
-      3 → API key missing
-      4 → both missing
+    yt-dlp is the only hard requirement — videos with native captions need no
+    Whisper key at all, so a missing key must not fail the preflight. Exit 0
+    when yt-dlp is present; stderr notes flag missing ffmpeg/ffprobe (needed
+    for --frames and local-file Whisper) and a missing Whisper key (needed only
+    for caption-less videos). Exit 2 when yt-dlp is missing.
     """
     s = _status()
-    if s["status"] == "ready":
-        return 0
-
-    parts = []
-    if s["missing_binaries"]:
-        parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
     installer = Path(__file__).resolve()
-    sys.stderr.write(
-        f"[watch] setup incomplete ({'; '.join(parts)}). "
-        f"Run: python3 {installer}\n"
-    )
-    sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
-        return 4
-    if s["missing_binaries"]:
+    if s["missing_required"]:
+        sys.stderr.write(
+            f"[watch] setup incomplete (missing binaries: {', '.join(s['missing_required'])}). "
+            f"Run: python3 {installer}\n"
+        )
+        sys.stderr.flush()
         return 2
-    return 3
+
+    if s["missing_optional"]:
+        sys.stderr.write(_optional_ffmpeg_note(s["missing_optional"]) + "\n")
+    if not s["has_api_key"]:
+        sys.stderr.write(
+            "[watch] note: no Whisper API key — videos without native captions "
+            f"will return no transcript. Run `python3 {installer}` to add one.\n"
+        )
+    sys.stderr.flush()
+    return 0
 
 
 def cmd_json() -> int:
@@ -270,22 +294,33 @@ def cmd_install() -> int:
             if not ok:
                 return 2
             still_missing = _check_binaries()
-            if still_missing:
-                print(f"[setup] still missing after install: {', '.join(still_missing)}", file=sys.stderr)
+            still_required = [b for b in still_missing if b in HARD_BINARIES]
+            if still_required:
+                print(f"[setup] still missing after install: {', '.join(still_required)}", file=sys.stderr)
                 return 2
-            installed_deps = True
-        elif system == "Linux":
-            print("[setup] dependencies missing on Linux — please install:", file=sys.stderr)
-            print("  " + _install_hint_linux(missing), file=sys.stderr)
-            return 2
-        elif system == "Windows":
-            print("[setup] dependencies missing on Windows — please install:", file=sys.stderr)
-            print("  " + _install_hint_windows(missing), file=sys.stderr)
-            return 2
+            installed_deps = not still_missing
+            if still_missing:
+                print(_optional_ffmpeg_note(still_missing), file=sys.stderr)
         else:
-            print(f"[setup] unsupported platform ({system}) for auto-install. Install manually:", file=sys.stderr)
-            print(f"  missing: {', '.join(missing)}", file=sys.stderr)
-            return 2
+            missing_required = [b for b in missing if b in HARD_BINARIES]
+            missing_optional = [b for b in missing if b in OPTIONAL_BINARIES]
+            if system == "Linux":
+                hint = _install_hint_linux
+            elif system == "Windows":
+                hint = _install_hint_windows
+            else:
+                hint = None
+            if missing_required:
+                if hint is not None:
+                    print(f"[setup] dependencies missing on {system} — please install:", file=sys.stderr)
+                    print("  " + hint(missing_required), file=sys.stderr)
+                else:
+                    print(f"[setup] unsupported platform ({system}) for auto-install. Install manually:", file=sys.stderr)
+                    print(f"  missing: {', '.join(missing_required)}", file=sys.stderr)
+                return 2
+            print(_optional_ffmpeg_note(missing_optional), file=sys.stderr)
+            if hint is not None:
+                print("  " + hint(missing_optional), file=sys.stderr)
 
     created = _scaffold_env()
     if created:
@@ -308,7 +343,7 @@ def cmd_install() -> int:
     print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
     print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
+    print("  Without a key, /watch still works but videos without captions come back with no transcript.")
     return 3
 
 

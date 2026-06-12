@@ -14,3 +14,7 @@ htmlcov/
 
 # local Claude Code settings
 .claude/settings.local.json
+
+# local secrets / mission test assets
+.env
+/test-assets/
